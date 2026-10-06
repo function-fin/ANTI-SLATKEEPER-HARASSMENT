@@ -1,0 +1,708 @@
+-- ===============================================================================
+-- PROJECT SPWN — SISTEMA DE DETECÇÃO E ANTI-PERSEGUIÇÃO (v3.6 PAGINATED ENGINE)
+-- ===============================================================================
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+local LocalPlayer = Players.LocalPlayer
+
+-- FONTE PADRÃO ARCADE PIXEL
+local ARCADE_FONT = Enum.Font.Arcade
+
+-- REGISTRO DO HORÁRIO DE ENTRADA DO USUÁRIO NO SERVIDOR
+local LOCAL_USER_JOIN_TIME = tick()
+local CURRENT_JOB_ID = game.JobId ~= "" and game.JobId or "LOCAL_SERVER"
+
+-- 1. ESTRUTURA E PERSISTÊNCIA DO BANCO DE DADOS (JSON V1)
+local FILE_PATH = "PROJECT_SPWN_Database_V1.json"
+local DB_VERSION = 1
+local MAX_HISTORY_PER_USER = 50
+
+local Database = {
+    database_version = DB_VERSION,
+    users = {}
+}
+
+local function CarregarBancoDeDados()
+    local success, result = pcall(function()
+        if readfile and isfile and isfile(FILE_PATH) then
+            return HttpService:JSONDecode(readfile(FILE_PATH))
+        end
+    end)
+    if success and type(result) == "table" and result.users then
+        Database = result
+    else
+        Database = {
+            database_version = DB_VERSION,
+            users = {}
+        }
+    end
+end
+
+local function SalvarBancoDeDados()
+    if writefile then
+        pcall(function()
+            writefile(FILE_PATH, HttpService:JSONEncode(Database))
+        end)
+    end
+end
+
+CarregarBancoDeDados()
+
+-- 2. CADASTRO DE ALVOS - LISTA NEGRA POR NOMES E RESOLUÇÃO DINÂMICA DE ID
+local LISTA_NEGRA_NOMES = {
+    ["lylsgky"] = "Slayer member",
+    ["breno010l"] = "Bazuka / Slayer Owner",
+    ["trolllinux"] = "DevCat / Slayer / Ligação com Bazuka",
+    ["staffordmakayla783"] = "Amigo Bazuka",
+    ["itz_kadu22"] = "Bazuka Alt",
+    ["pal_doce1238"] = "Bazuka Alt",
+    ["bacongosta837"] = "Dark Vazador",
+    ["vermelhada23"] = "XinHub Yasmin",
+    ["rtrt967"] = "Lolyta Coquette",
+    ["baconsigma28091"] = "Dark Alt",
+    ["eyetr0col"] = "Suspeito / Pessoa Relevante",
+    ["meutiobateemimeguoza"] = "Suspeito Próximo",
+    ["eirtaauder"] = "Monitorado",
+    ["silvaxz_572"] = "Monitorado",
+    ["nao_souerivaldo"] = "Amigo do Renegado",
+    ["ROBLOXUSERSPWN0"] = "BOT"
+}
+
+local CacheIDsListaNegra = {}
+
+local function ResolverUserId(username)
+    local lowerName = string.lower(username)
+    if CacheIDsListaNegra[lowerName] then
+        return CacheIDsListaNegra[lowerName]
+    end
+    
+    local success, result = pcall(function()
+        return Players:GetUserIdFromNameAsync(username)
+    end)
+    
+    if success and tonumber(result) then
+        CacheIDsListaNegra[lowerName] = tonumber(result)
+        return tonumber(result)
+    end
+    return nil
+end
+
+-- Mapeia e resolve os IDs da lista negra em segundo plano
+task.spawn(function()
+    for nick, _ in pairs(LISTA_NEGRA_NOMES) do
+        ResolverUserId(nick)
+        task.wait(0.1)
+    end
+end)
+
+local function VerificarSeEstaNaListaNegra(userId, username)
+    if username then
+        local lowerName = string.lower(username)
+        if LISTA_NEGRA_NOMES[lowerName] then
+            return true, username, LISTA_NEGRA_NOMES[lowerName]
+        end
+    end
+
+    if userId then
+        for lowerName, cachedId in pairs(CacheIDsListaNegra) do
+            if cachedId == userId then
+                return true, lowerName, LISTA_NEGRA_NOMES[lowerName]
+            end
+        end
+    end
+
+    return false, nil, nil
+end
+
+-- 3. GERENCIADOR DE REQUISIÇÕES ROPROXY E BUSCA PAGINADA (INDEFINIDA / CURSOR)
+local CacheVinculos = {}
+
+local function RequisicaoProxy(url)
+    local urlProxy = string.gsub(url, "roblox%.com", "roproxy.com")
+    local success, response = pcall(function()
+        if request then
+            return request({Url = urlProxy, Method = "GET"})
+        elseif http_request then
+            return http_request({Url = urlProxy, Method = "GET"})
+        elseif syn and syn.request then
+            return syn.request({Url = urlProxy, Method = "GET"})
+        else
+            return {Body = game:HttpGet(urlProxy)}
+        end
+    end)
+    return success and response or nil
+end
+
+local function ConsultarVinculoComListaNegra(userId)
+    -- Retorna do cache local se já foi inspecionado completamente
+    if CacheVinculos[userId] then
+        return CacheVinculos[userId].status, CacheVinculos[userId].alvos, CacheVinculos[userId].textoAlvos
+    end
+
+    -- Garante a resolução prévia de todos os IDs da Lista Negra
+    for lowerNick, _ in pairs(LISTA_NEGRA_NOMES) do
+        if not CacheIDsListaNegra[lowerNick] then
+            ResolverUserId(lowerNick)
+        end
+    end
+
+    local alvosEncontradosMap = {}
+    local alvosEncontradosList = {}
+    
+    local cursor = ""
+    local processamentoConcluido = false
+    local tentativasComErro = 0
+    local maxTentativasPorPagina = 5
+
+    -- LOOP INFINITO DE VARREDURA VIA PAGINAÇÃO POR CURSOR
+    while not processamentoConcluido do
+        local url = "https://friends.roblox.com/v1/users/" .. userId .. "/friends/find?userSort=0&limit=50"
+        if cursor and cursor ~= "" then
+            url = url .. "&cursor=" .. cursor
+        end
+
+        local resp = RequisicaoProxy(url)
+
+        if resp and resp.Body then
+            local successDecode, data = pcall(function()
+                return HttpService:JSONDecode(resp.Body)
+            end)
+
+            if successDecode and type(data) == "table" and data.data then
+                tentativasComErro = 0 -- Reseta o contador ao obter sucesso
+                
+                -- Analisa a lista de amigos retornada na página atual
+                for _, friendInfo in ipairs(data.data) do
+                    local fId = tonumber(friendInfo.id)
+                    local fName = string.lower(tostring(friendInfo.name or friendInfo.username or ""))
+
+                    for lowerNick, _ in pairs(LISTA_NEGRA_NOMES) do
+                        local targetId = CacheIDsListaNegra[lowerNick]
+                        
+                        if (targetId and fId == targetId) or (fName == lowerNick) then
+                            if not alvosEncontradosMap[lowerNick] then
+                                alvosEncontradosMap[lowerNick] = true
+                                table.insert(alvosEncontradosList, lowerNick)
+                            end
+                        end
+                    end
+                end
+
+                -- VERIFICAÇÃO DO PRÓXIMO CURSOR
+                local nextCursor = data.nextPageCursor or data.nextCursor
+                if nextCursor and type(nextCursor) == "string" and nextCursor ~= "" then
+                    cursor = nextCursor
+                    task.wait(0.1) -- Intervalo para respeitar a API e evitar throttle
+                else
+                    processamentoConcluido = true -- Fim da lista de amigos!
+                end
+            else
+                -- Tratamento para respostas inválidas / throttling (429/503)
+                tentativasComErro = tentativasComErro + 1
+                if tentativasComErro >= maxTentativasPorPagina then
+                    processamentoConcluido = true
+                else
+                    task.wait(2) -- Aguarda 2 segundos e re-tenta a mesma página
+                end
+            end
+        else
+            -- Falha na requisição HTTP
+            tentativasComErro = tentativasComErro + 1
+            if tentativasComErro >= maxTentativasPorPagina then
+                processamentoConcluido = true
+            else
+                task.wait(2)
+            end
+        end
+    end
+
+    -- SINTETIZA OS RESULTADOS DA INSPECÇÃO COMPLETA
+    if #alvosEncontradosList > 0 then
+        local textoAlvos = table.concat(alvosEncontradosList, ", ")
+        CacheVinculos[userId] = {status = "CONFIRMADO", alvos = alvosEncontradosList, textoAlvos = textoAlvos}
+        return "CONFIRMADO", alvosEncontradosList, textoAlvos
+    end
+
+    CacheVinculos[userId] = {status = "NENHUM", alvos = {}, textoAlvos = ""}
+    return "NENHUM", {}, ""
+end
+
+-- 4. INTERFACE VISUAL
+local ParentGui = (gethui and gethui()) or CoreGui or LocalPlayer:WaitForChild("PlayerGui")
+
+if ParentGui:FindFirstChild("PROJECT_SPWN_GUI") then
+    ParentGui.PROJECT_SPWN_GUI:Destroy()
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PROJECT_SPWN_GUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = ParentGui
+
+local ToggleBtn = Instance.new("ImageButton")
+ToggleBtn.Name = "ToggleStalkerBtn"
+ToggleBtn.Size = UDim2.new(0, 48, 0, 48)
+ToggleBtn.Position = UDim2.new(0, 220, 0, 10)
+ToggleBtn.BackgroundTransparency = 1
+ToggleBtn.Image = "rbxassetid://95100181226164"
+ToggleBtn.Active = true
+ToggleBtn.Draggable = true
+ToggleBtn.Parent = ScreenGui
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 460, 0, 340)
+MainFrame.Position = UDim2.new(0.5, -230, 0.25, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = false
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Color = Color3.fromRGB(255, 255, 255)
+MainStroke.Thickness = 1.5
+MainStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+MainStroke.Parent = MainFrame
+
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 45)
+Header.BackgroundTransparency = 1
+Header.Parent = MainFrame
+
+local HeaderIcon = Instance.new("ImageLabel")
+HeaderIcon.Size = UDim2.new(0, 32, 0, 32)
+HeaderIcon.Position = UDim2.new(0, 10, 0, 6)
+HeaderIcon.BackgroundTransparency = 1
+HeaderIcon.Image = "rbxassetid://77667780640343"
+HeaderIcon.Parent = Header
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -90, 1, 0)
+Title.Position = UDim2.new(0, 48, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "Anti-persecution PROJECT WEB"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 19
+Title.Font = ARCADE_FONT
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+local CloseBtn = Instance.new("ImageButton")
+CloseBtn.Size = UDim2.new(0, 32, 0, 32)
+CloseBtn.Position = UDim2.new(1, -40, 0, 6)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Image = "rbxassetid://78774633521849"
+CloseBtn.Parent = Header
+
+local StatsBar = Instance.new("Frame")
+StatsBar.Size = UDim2.new(1, -20, 0, 30)
+StatsBar.Position = UDim2.new(0, 10, 0, 48)
+StatsBar.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+StatsBar.BorderSizePixel = 0
+StatsBar.Parent = MainFrame
+
+local StatsStroke = Instance.new("UIStroke")
+StatsStroke.Color = Color3.fromRGB(180, 180, 180)
+StatsStroke.Thickness = 1
+StatsStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+StatsStroke.Parent = StatsBar
+
+local PlayersCountLabel = Instance.new("TextLabel")
+PlayersCountLabel.Size = UDim2.new(0.5, 0, 1, 0)
+PlayersCountLabel.Position = UDim2.new(0, 10, 0, 0)
+PlayersCountLabel.BackgroundTransparency = 1
+PlayersCountLabel.Text = "JOGADORES NO SERVIDOR: " .. #Players:GetPlayers() .. "/" .. Players.MaxPlayers
+PlayersCountLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+PlayersCountLabel.TextSize = 10
+PlayersCountLabel.Font = ARCADE_FONT
+PlayersCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+PlayersCountLabel.Parent = StatsBar
+
+local SuspectsCountLabel = Instance.new("TextLabel")
+SuspectsCountLabel.Size = UDim2.new(0.5, -10, 1, 0)
+SuspectsCountLabel.Position = UDim2.new(0.5, 0, 0, 0)
+SuspectsCountLabel.BackgroundTransparency = 1
+SuspectsCountLabel.Text = "SUSPEITOS IDENTIFICADOS: 0"
+SuspectsCountLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+SuspectsCountLabel.TextSize = 10
+SuspectsCountLabel.Font = ARCADE_FONT
+SuspectsCountLabel.TextXAlignment = Enum.TextXAlignment.Right
+SuspectsCountLabel.Parent = StatsBar
+
+local SuspeitosUnicosServidor = {}
+
+local function AtualizarContadorSuspeitos()
+    local total = 0
+    for _ in pairs(SuspeitosUnicosServidor) do
+        total = total + 1
+    end
+    SuspectsCountLabel.Text = "SUSPEITOS IDENTIFICADOS: " .. total
+end
+
+local ScrollFeed = Instance.new("ScrollingFrame")
+ScrollFeed.Size = UDim2.new(1, -20, 1, -135)
+ScrollFeed.Position = UDim2.new(0, 10, 0, 85)
+ScrollFeed.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ScrollFeed.BorderSizePixel = 0
+ScrollFeed.ScrollBarThickness = 4
+ScrollFeed.ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255)
+ScrollFeed.AutomaticCanvasSize = Enum.AutomaticSize.None
+ScrollFeed.Parent = MainFrame
+
+local UIListLayout = Instance.new("UIListLayout")
+UIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+UIListLayout.Padding = UDim.new(0, 6)
+UIListLayout.Parent = ScrollFeed
+
+UIListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    ScrollFeed.CanvasSize = UDim2.new(0, 0, 0, UIListLayout.AbsoluteContentSize.Y + 12)
+    ScrollFeed.CanvasPosition = Vector2.new(0, UIListLayout.AbsoluteContentSize.Y)
+end)
+
+local Footer = Instance.new("Frame")
+Footer.Size = UDim2.new(1, -20, 0, 32)
+Footer.Position = UDim2.new(0, 10, 1, -38)
+Footer.BackgroundTransparency = 1
+Footer.Parent = MainFrame
+
+local CopyBtn = Instance.new("TextButton")
+CopyBtn.Size = UDim2.new(0.31, 0, 1, 0)
+CopyBtn.Position = UDim2.new(0, 0, 0, 0)
+CopyBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+CopyBtn.Text = "COPY INFO"
+CopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CopyBtn.Font = ARCADE_FONT
+CopyBtn.TextSize = 10
+CopyBtn.Parent = Footer
+
+local CopyStroke = Instance.new("UIStroke")
+CopyStroke.Color = Color3.fromRGB(255, 255, 255)
+CopyStroke.Thickness = 1
+CopyStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+CopyStroke.Parent = CopyBtn
+
+local DiscordBtn = Instance.new("TextButton")
+DiscordBtn.Size = UDim2.new(0.38, 0, 1, 0)
+DiscordBtn.Position = UDim2.new(0.33, 0, 0, 0)
+DiscordBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+DiscordBtn.Text = "SEND TO DISCORD"
+DiscordBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+DiscordBtn.Font = ARCADE_FONT
+DiscordBtn.TextSize = 9
+DiscordBtn.Parent = Footer
+
+local DiscordStroke = Instance.new("UIStroke")
+DiscordStroke.Color = Color3.fromRGB(255, 255, 255)
+DiscordStroke.Thickness = 1
+DiscordStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+DiscordStroke.Parent = DiscordBtn
+
+local ClearBtn = Instance.new("TextButton")
+ClearBtn.Size = UDim2.new(0.27, 0, 1, 0)
+ClearBtn.Position = UDim2.new(0.73, 0, 0, 0)
+ClearBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ClearBtn.Text = "CLEAR"
+ClearBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ClearBtn.Font = ARCADE_FONT
+ClearBtn.TextSize = 10
+ClearBtn.Parent = Footer
+
+local ClearStroke = Instance.new("UIStroke")
+ClearStroke.Color = Color3.fromRGB(255, 255, 255)
+ClearStroke.Thickness = 1
+ClearStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+ClearStroke.Parent = ClearBtn
+
+local ToastFrame = Instance.new("Frame")
+ToastFrame.Size = UDim2.new(0, 360, 0, 52)
+ToastFrame.Position = UDim2.new(1, 10, 1, -65)
+ToastFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+ToastFrame.BorderSizePixel = 0
+ToastFrame.Parent = ScreenGui
+
+local ToastStroke = Instance.new("UIStroke")
+ToastStroke.Color = Color3.fromRGB(255, 255, 255)
+ToastStroke.Thickness = 1
+ToastStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+ToastStroke.Parent = ToastFrame
+
+local ToastText = Instance.new("TextLabel")
+ToastText.Size = UDim2.new(1, -10, 1, 0)
+ToastText.Position = UDim2.new(0, 5, 0, 0)
+ToastText.BackgroundTransparency = 1
+ToastText.TextColor3 = Color3.fromRGB(255, 255, 255)
+ToastText.TextSize = 10
+ToastText.Font = ARCADE_FONT
+ToastText.TextWrapped = true
+ToastText.TextXAlignment = Enum.TextXAlignment.Center
+ToastText.Parent = ToastFrame
+
+local logsHistoricoEstruturado = {}
+
+local function MostrarToast(texto)
+    ToastText.Text = texto or ""
+    ToastFrame:TweenPosition(UDim2.new(1, -370, 1, -65), Enum.EasingDirection.Out, Enum.EasingStyle.Quart, 0.3, true)
+    task.delay(6, function()
+        ToastFrame:TweenPosition(UDim2.new(1, 10, 1, -65), Enum.EasingDirection.In, Enum.EasingStyle.Quart, 0.3, true)
+    end)
+end
+
+local function AdicionarCardFeed(status, user, userId, motivo, detalhe)
+    status = tostring(status or "DESCONHECIDO")
+    user = tostring(user or "Desconhecido")
+    userId = tonumber(userId) or 0
+    motivo = tostring(motivo or "Nenhum motivo informado")
+    detalhe = tostring(detalhe or "")
+
+    local Card = Instance.new("Frame")
+    Card.Size = UDim2.new(1, -6, 0, 0)
+    Card.AutomaticSize = Enum.AutomaticSize.Y
+    Card.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    Card.BorderSizePixel = 0
+    Card.Parent = ScrollFeed
+
+    local CardPadding = Instance.new("UIPadding")
+    CardPadding.PaddingTop = UDim.new(0, 6)
+    CardPadding.PaddingBottom = UDim.new(0, 6)
+    CardPadding.PaddingLeft = UDim.new(0, 8)
+    CardPadding.PaddingRight = UDim.new(0, 8)
+    CardPadding.Parent = Card
+
+    local CardStroke = Instance.new("UIStroke")
+    CardStroke.Color = Color3.fromRGB(150, 150, 150)
+    CardStroke.Thickness = 1
+    CardStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    CardStroke.Parent = Card
+
+    local CardText = Instance.new("TextLabel")
+    CardText.Size = UDim2.new(1, 0, 0, 0)
+    CardText.AutomaticSize = Enum.AutomaticSize.Y
+    CardText.BackgroundTransparency = 1
+    CardText.Text = string.format("[%s] %s (ID: %d)\nMOTIVO: %s\n%s", status, user, userId, motivo, detalhe)
+    CardText.TextColor3 = Color3.fromRGB(255, 255, 255)
+    CardText.TextSize = 9
+    CardText.Font = ARCADE_FONT
+    CardText.TextWrapped = true
+    CardText.TextXAlignment = Enum.TextXAlignment.Left
+    CardText.TextYAlignment = Enum.TextYAlignment.Top
+    CardText.Parent = Card
+
+    local dataHora = os.date("%d/%m/%Y %H:%M:%S")
+    local logEntrada = string.format("[%s]\nSTATUS: %s\nUSER: %s | ID: %d\nSERVIDOR: %s | PLAYERS: %d\nMOTIVO: %s\nDETALHES: %s\n-----------------------------------",
+        dataHora, status, user, userId, CURRENT_JOB_ID, #Players:GetPlayers(), motivo, detalhe)
+    
+    table.insert(logsHistoricoEstruturado, logEntrada)
+end
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+end)
+
+CloseBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+end)
+
+ClearBtn.MouseButton1Click:Connect(function()
+    table.clear(logsHistoricoEstruturado)
+    for _, child in ipairs(ScrollFeed:GetChildren()) do
+        if child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+    ScrollFeed.CanvasSize = UDim2.new(0, 0, 0, 0)
+    MostrarToast("INFORMAÇÕES E FEED LIMPOS COM SUCESSO!")
+end)
+
+-- 5. LÓGICA PRINCIPAL DE ANALÍTICA E PROCESSAMENTO
+local function ProcessarEntradaJogador(player)
+    if player == LocalPlayer then return end
+
+    local username = player.Name
+    local userId = player.UserId
+    local age = player.AccountAge
+    local dataHoraCompleta = os.date("%d/%m/%Y %H:%M:%S")
+    local totalPlayers = #Players:GetPlayers()
+    local idKey = tostring(userId)
+
+    local voceJaEstava = (tick() - LOCAL_USER_JOIN_TIME) > 2
+    local ehAmigoMeu = false
+    pcall(function()
+        ehAmigoMeu = LocalPlayer:IsFriendsWith(userId)
+    end)
+
+    if not Database.users[idKey] then
+        Database.users[idKey] = {
+            userId = userId,
+            username = username,
+            primeiro_encontro = dataHoraCompleta,
+            ultimo_encontro = dataHoraCompleta,
+            total_encontros = 0,
+            encontros_relevantes = 0,
+            servidores_diferentes = {},
+            historico_eventos = {},
+            relacoes = {},
+            status_atual = "SEM INDÍCIO"
+        }
+    end
+
+    local userData = Database.users[idKey]
+    userData.username = username
+    userData.ultimo_encontro = dataHoraCompleta
+    userData.total_encontros = userData.total_encontros + 1
+
+    if not table.find(userData.servidores_diferentes, CURRENT_JOB_ID) then
+        table.insert(userData.servidores_diferentes, CURRENT_JOB_ID)
+    end
+
+    local ehCoincidenciaRelevante = (totalPlayers <= 10) and voceJaEstava
+    if ehCoincidenciaRelevante then
+        userData.encontros_relevantes = userData.encontros_relevantes + 1
+    end
+
+    local novoEvento = {
+        data_hora = dataHoraCompleta,
+        servidor = CURRENT_JOB_ID,
+        jogadores_no_momento = totalPlayers,
+        voce_ja_estava = voceJaEstava,
+        coincidencia_relevante = ehCoincidenciaRelevante
+    }
+    table.insert(userData.historico_eventos, novoEvento)
+    if #userData.historico_eventos > MAX_HISTORY_PER_USER then
+        table.remove(userData.historico_eventos, 1)
+    end
+
+    SalvarBancoDeDados()
+
+    -- 1. VERIFICAÇÃO DIRETA DE LISTA NEGRA
+    local isLN, targetName, targetMotivo = VerificarSeEstaNaListaNegra(userId, username)
+    if isLN then
+        SuspeitosUnicosServidor[userId] = true
+        AtualizarContadorSuspeitos()
+        userData.status_atual = "ALVO - LISTA NEGRA"
+        SalvarBancoDeDados()
+
+        MostrarToast(string.format("%s ENTROU NO SERVIDOR\nSTATUS: ALVO — LISTA NEGRA", username))
+        AdicionarCardFeed("ALVO - LISTA NEGRA", username, userId, targetMotivo or "Identificado na Lista Negra", "IDENTIFICAÇÃO DIRETA NO BANCO DE DADOS")
+        return
+    end
+
+    -- 2. VERIFICAÇÃO DE VÍNCULOS EM SEGUNDO PLANO (VARREDURA POR CURSOR)
+    task.spawn(function()
+        local vinculoStatus, alvosLista, textoAlvos = ConsultarVinculoComListaNegra(userId)
+
+        if ehAmigoMeu and vinculoStatus == "CONFIRMADO" then
+            SuspeitosUnicosServidor[userId] = true
+            AtualizarContadorSuspeitos()
+            userData.status_atual = "AMIGO COM RISCO ALTO"
+            
+            table.insert(userData.relacoes, {tipo = "Amigo Pessoal com Vinculo em Alvo", alvos = textoAlvos, data = dataHoraCompleta})
+            SalvarBancoDeDados()
+
+            local situacaoTexto = voceJaEstava and "está presente no servidor" or "Entrou no servidor"
+            MostrarToast(string.format("%s %s ( Risco Alto ) contém %s da lista negra como amigo", username, situacaoTexto, textoAlvos))
+            AdicionarCardFeed("RISCO ALTO - AMIZADE", username, userId, "Amigo de: " .. textoAlvos, "SITUAÇÃO: Amigo pessoal ligado a alvo(s) perigoso(s)")
+            return
+        end
+
+        if vinculoStatus == "CONFIRMADO" then
+            SuspeitosUnicosServidor[userId] = true
+            AtualizarContadorSuspeitos()
+            userData.status_atual = "VÍNCULO COM LISTA NEGRA"
+            
+            table.insert(userData.relacoes, {tipo = "Amigo de Alvo", alvos = textoAlvos, data = dataHoraCompleta})
+            SalvarBancoDeDados()
+
+            MostrarToast(string.format("%s ENTROU NO SERVIDOR\nSTATUS: VÍNCULO ENCONTRADO (%s)", username, textoAlvos))
+            AdicionarCardFeed("VINCULO COM ALVO", username, userId, "Amigo de: " .. textoAlvos, "FONTE: CONSULTA ROPROXY PAGINADA")
+            return
+        end
+
+        if userData.encontros_relevantes >= 2 then
+            SuspeitosUnicosServidor[userId] = true
+            AtualizarContadorSuspeitos()
+            userData.status_atual = "FATOR COINCIDÊNCIA"
+            SalvarBancoDeDados()
+
+            MostrarToast(string.format("%s ENTROU NO SERVIDOR\nSTATUS: FATOR COINCIDÊNCIA (%dX)", username, userData.encontros_relevantes))
+            AdicionarCardFeed("FATOR COINCIDENCIA", username, userId, string.format("%d Encontros Relevantes", userData.encontros_relevantes), string.format("Entrou num server de %d players", totalPlayers))
+            return
+        end
+
+        if age >= 1 and age <= 20 then
+            SuspeitosUnicosServidor[userId] = true
+            AtualizarContadorSuspeitos()
+            userData.status_atual = "CONTA RECENTE"
+            SalvarBancoDeDados()
+
+            MostrarToast(string.format("%s ENTROU NO SERVIDOR\nSTATUS: CONTA RECENTE (%d DIAS)", username, age))
+            AdicionarCardFeed("CONTA RECENTE", username, userId, string.format("Conta criada há %d dias", age), "Fator de monitoramento de ALT")
+            return
+        end
+
+        if ehAmigoMeu then
+            userData.status_atual = "AMIGO"
+            SalvarBancoDeDados()
+            return
+        end
+
+        userData.status_atual = "SEM INDÍCIO"
+        SalvarBancoDeDados()
+    end)
+end
+
+Players.PlayerAdded:Connect(function(player)
+    PlayersCountLabel.Text = "JOGADORES NO SERVIDOR: " .. #Players:GetPlayers() .. "/" .. Players.MaxPlayers
+    ProcessarEntradaJogador(player)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    PlayersCountLabel.Text = "JOGADORES NO SERVIDOR: " .. #Players:GetPlayers() .. "/" .. Players.MaxPlayers
+    if SuspeitosUnicosServidor[player.UserId] then
+        SuspeitosUnicosServidor[player.UserId] = nil
+        AtualizarContadorSuspeitos()
+    end
+end)
+
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= LocalPlayer then
+        task.spawn(function()
+            ProcessarEntradaJogador(p)
+        end)
+    end
+end
+
+CopyBtn.MouseButton1Click:Connect(function()
+    local output = "=== PROJECT SPWN - RELATÓRIO DE SESSÃO DETALHADO ===\n" .. table.concat(logsHistoricoEstruturado, "\n")
+    if #logsHistoricoEstruturado == 0 then
+        output = output .. "\nNenhum evento registrado nesta sessão até o momento."
+    end
+
+    local copiado = false
+    
+    if setclipboard then
+        local ok = pcall(function() setclipboard(output) end)
+        if ok then copiado = true end
+    end
+    if not copiado and toClipboard then
+        local ok = pcall(function() toClipboard(output) end)
+        if ok then copiado = true end
+    end
+    if not copiado and writeclipboard then
+        local ok = pcall(function() writeclipboard(output) end)
+        if ok then copiado = true end
+    end
+    if not copiado and Clipboard and Clipboard.set then
+        local ok = pcall(function() Clipboard.set(output) end)
+        if ok then copiado = true end
+    end
+
+    if copiado then
+        MostrarToast("RELATÓRIO COMPLETO COPIADO COM SUCESSO!")
+    else
+        MostrarToast("ERRO AO COPIAR: EXECUTOR BLOQUEOU CLIPBOARD")
+    end
+end)
