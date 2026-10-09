@@ -1,20 +1,13 @@
--- ===============================================================================
--- PROJECT SPWN — SISTEMA DE DETECÇÃO E ANTI-PERSEGUIÇÃO (v3.6 PAGINATED ENGINE)
--- ===============================================================================
-
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local LocalPlayer = Players.LocalPlayer
 
--- FONTE PADRÃO ARCADE PIXEL
 local ARCADE_FONT = Enum.Font.Arcade
 
--- REGISTRO DO HORÁRIO DE ENTRADA DO USUÁRIO NO SERVIDOR
 local LOCAL_USER_JOIN_TIME = tick()
 local CURRENT_JOB_ID = game.JobId ~= "" and game.JobId or "LOCAL_SERVER"
 
--- 1. ESTRUTURA E PERSISTÊNCIA DO BANCO DE DADOS (JSON V1)
 local FILE_PATH = "PROJECT_SPWN_Database_V1.json"
 local DB_VERSION = 1
 local MAX_HISTORY_PER_USER = 50
@@ -50,7 +43,6 @@ end
 
 CarregarBancoDeDados()
 
--- 2. CADASTRO DE ALVOS - LISTA NEGRA POR NOMES E RESOLUÇÃO DINÂMICA DE ID
 local LISTA_NEGRA_NOMES = {
     ["lylsgky"] = "Slayer member",
     ["breno010l"] = "Bazuka / Slayer Owner",
@@ -77,11 +69,11 @@ local function ResolverUserId(username)
     if CacheIDsListaNegra[lowerName] then
         return CacheIDsListaNegra[lowerName]
     end
-    
+
     local success, result = pcall(function()
         return Players:GetUserIdFromNameAsync(username)
     end)
-    
+
     if success and tonumber(result) then
         CacheIDsListaNegra[lowerName] = tonumber(result)
         return tonumber(result)
@@ -89,7 +81,6 @@ local function ResolverUserId(username)
     return nil
 end
 
--- Mapeia e resolve os IDs da lista negra em segundo plano
 task.spawn(function()
     for nick, _ in pairs(LISTA_NEGRA_NOMES) do
         ResolverUserId(nick)
@@ -116,7 +107,6 @@ local function VerificarSeEstaNaListaNegra(userId, username)
     return false, nil, nil
 end
 
--- 3. GERENCIADOR DE REQUISIÇÕES ROPROXY E BUSCA PAGINADA (INDEFINIDA / CURSOR)
 local CacheVinculos = {}
 
 local function RequisicaoProxy(url)
@@ -136,12 +126,10 @@ local function RequisicaoProxy(url)
 end
 
 local function ConsultarVinculoComListaNegra(userId)
-    -- Retorna do cache local se já foi inspecionado completamente
     if CacheVinculos[userId] then
         return CacheVinculos[userId].status, CacheVinculos[userId].alvos, CacheVinculos[userId].textoAlvos
     end
 
-    -- Garante a resolução prévia de todos os IDs da Lista Negra
     for lowerNick, _ in pairs(LISTA_NEGRA_NOMES) do
         if not CacheIDsListaNegra[lowerNick] then
             ResolverUserId(lowerNick)
@@ -150,75 +138,99 @@ local function ConsultarVinculoComListaNegra(userId)
 
     local alvosEncontradosMap = {}
     local alvosEncontradosList = {}
-    
-    local cursor = ""
-    local processamentoConcluido = false
-    local tentativasComErro = 0
-    local maxTentativasPorPagina = 5
 
-    -- LOOP INFINITO DE VARREDURA VIA PAGINAÇÃO POR CURSOR
-    while not processamentoConcluido do
-        local url = "https://friends.roblox.com/v1/users/" .. userId .. "/friends/find?userSort=0&limit=50"
-        if cursor and cursor ~= "" then
-            url = url .. "&cursor=" .. cursor
-        end
+    local sucessoNativo, friendPages = pcall(function()
+        return Players:GetFriendsAsync(userId)
+    end)
 
-        local resp = RequisicaoProxy(url)
+    if sucessoNativo and friendPages then
+        while true do
+            local paginaAtual = friendPages:GetCurrentPage()
+            
+            for _, amigo in ipairs(paginaAtual) do
+                local fId = tonumber(amigo.Id)
+                local fName = string.lower(tostring(amigo.Username or ""))
 
-        if resp and resp.Body then
-            local successDecode, data = pcall(function()
-                return HttpService:JSONDecode(resp.Body)
-            end)
-
-            if successDecode and type(data) == "table" and data.data then
-                tentativasComErro = 0 -- Reseta o contador ao obter sucesso
-                
-                -- Analisa a lista de amigos retornada na página atual
-                for _, friendInfo in ipairs(data.data) do
-                    local fId = tonumber(friendInfo.id)
-                    local fName = string.lower(tostring(friendInfo.name or friendInfo.username or ""))
-
-                    for lowerNick, _ in pairs(LISTA_NEGRA_NOMES) do
-                        local targetId = CacheIDsListaNegra[lowerNick]
-                        
-                        if (targetId and fId == targetId) or (fName == lowerNick) then
-                            if not alvosEncontradosMap[lowerNick] then
-                                alvosEncontradosMap[lowerNick] = true
-                                table.insert(alvosEncontradosList, lowerNick)
-                            end
+                for lowerNick, _ in pairs(LISTA_NEGRA_NOMES) do
+                    local targetId = CacheIDsListaNegra[lowerNick]
+                    if (targetId and fId == targetId) or (fName == lowerNick) then
+                        if not alvosEncontradosMap[lowerNick] then
+                            alvosEncontradosMap[lowerNick] = true
+                            table.insert(alvosEncontradosList, lowerNick)
                         end
                     end
                 end
-
-                -- VERIFICAÇÃO DO PRÓXIMO CURSOR
-                local nextCursor = data.nextPageCursor or data.nextCursor
-                if nextCursor and type(nextCursor) == "string" and nextCursor ~= "" then
-                    cursor = nextCursor
-                    task.wait(0.1) -- Intervalo para respeitar a API e evitar throttle
-                else
-                    processamentoConcluido = true -- Fim da lista de amigos!
-                end
-            else
-                -- Tratamento para respostas inválidas / throttling (429/503)
-                tentativasComErro = tentativasComErro + 1
-                if tentativasComErro >= maxTentativasPorPagina then
-                    processamentoConcluido = true
-                else
-                    task.wait(2) -- Aguarda 2 segundos e re-tenta a mesma página
-                end
             end
-        else
-            -- Falha na requisição HTTP
-            tentativasComErro = tentativasComErro + 1
-            if tentativasComErro >= maxTentativasPorPagina then
-                processamentoConcluido = true
+
+            if friendPages.IsFinished then
+                break
+            end
+
+            local avancou = pcall(function()
+                friendPages:AdvanceToNextPageAsync()
+            end)
+
+            if not avancou then
+                task.wait(0.5)
+            end
+            task.wait(0.02)
+        end
+    end
+
+    if #alvosEncontradosList == 0 then
+        local cursor = ""
+        local processamentoConcluido = false
+        local tentativasComErro = 0
+
+        while not processamentoConcluido and tentativasComErro < 3 do
+            local url = "https://friends.roblox.com/v1/users/" .. userId .. "/friends/find?userSort=0&limit=50"
+            if cursor and cursor ~= "" then
+                url = url .. "&cursor=" .. cursor
+            end
+
+            local resp = RequisicaoProxy(url)
+
+            if resp and resp.Body then
+                local successDecode, data = pcall(function()
+                    return HttpService:JSONDecode(resp.Body)
+                end)
+
+                if successDecode and type(data) == "table" and data.data then
+                    tentativasComErro = 0
+                    for _, friendInfo in ipairs(data.data) do
+                        local fId = tonumber(friendInfo.id)
+                        local fName = string.lower(tostring(friendInfo.name or friendInfo.username or ""))
+
+                        for lowerNick, _ in pairs(LISTA_NEGRA_NOMES) do
+                            local targetId = CacheIDsListaNegra[lowerNick]
+                            if (targetId and fId == targetId) or (fName == lowerNick) then
+                                if not alvosEncontradosMap[lowerNick] then
+                                    alvosEncontradosMap[lowerNick] = true
+                                    table.insert(alvosEncontradosList, lowerNick)
+                                end
+                            end
+                        end
+                    end
+
+                    local nextCursor = data.nextPageCursor or data.nextCursor
+                    if nextCursor and type(nextCursor) == "string" and nextCursor ~= "" then
+                        cursor = nextCursor
+                        task.wait(0.05)
+                    else
+                        processamentoConcluido = true
+                    end
+                else
+                    tentativasComErro = tentativasComErro + 1
+                    task.wait(1)
+                end
             else
-                task.wait(2)
+                tentativasComErro = tentativasComErro + 1
+                task.wait(1)
             end
         end
     end
 
-    -- SINTETIZA OS RESULTADOS DA INSPECÇÃO COMPLETA
+    -- COMPILAÇÃO FINAL
     if #alvosEncontradosList > 0 then
         local textoAlvos = table.concat(alvosEncontradosList, ", ")
         CacheVinculos[userId] = {status = "CONFIRMADO", alvos = alvosEncontradosList, textoAlvos = textoAlvos}
@@ -494,7 +506,7 @@ local function AdicionarCardFeed(status, user, userId, motivo, detalhe)
     local dataHora = os.date("%d/%m/%Y %H:%M:%S")
     local logEntrada = string.format("[%s]\nSTATUS: %s\nUSER: %s | ID: %d\nSERVIDOR: %s | PLAYERS: %d\nMOTIVO: %s\nDETALHES: %s\n-----------------------------------",
         dataHora, status, user, userId, CURRENT_JOB_ID, #Players:GetPlayers(), motivo, detalhe)
-    
+
     table.insert(logsHistoricoEstruturado, logEntrada)
 end
 
@@ -590,15 +602,16 @@ local function ProcessarEntradaJogador(player)
         return
     end
 
-    -- 2. VERIFICAÇÃO DE VÍNCULOS EM SEGUNDO PLANO (VARREDURA POR CURSOR)
+    -- 2. VERIFICAÇÃO DE VÍNCULOS E COINCIDÊNCIAS EM SEGUNDO PLANO
     task.spawn(function()
         local vinculoStatus, alvosLista, textoAlvos = ConsultarVinculoComListaNegra(userId)
 
+        -- SE FOR SEU AMIGO E TIVER VÍNCULO COM A LISTA NEGRA (RISCO ALTO)
         if ehAmigoMeu and vinculoStatus == "CONFIRMADO" then
             SuspeitosUnicosServidor[userId] = true
             AtualizarContadorSuspeitos()
             userData.status_atual = "AMIGO COM RISCO ALTO"
-            
+
             table.insert(userData.relacoes, {tipo = "Amigo Pessoal com Vinculo em Alvo", alvos = textoAlvos, data = dataHoraCompleta})
             SalvarBancoDeDados()
 
@@ -608,30 +621,33 @@ local function ProcessarEntradaJogador(player)
             return
         end
 
+        -- VÍNCULO DIRETO COM LISTA NEGRA (QUANDO NÃO É SEU AMIGO)
         if vinculoStatus == "CONFIRMADO" then
             SuspeitosUnicosServidor[userId] = true
             AtualizarContadorSuspeitos()
             userData.status_atual = "VÍNCULO COM LISTA NEGRA"
-            
+
             table.insert(userData.relacoes, {tipo = "Amigo de Alvo", alvos = textoAlvos, data = dataHoraCompleta})
             SalvarBancoDeDados()
 
             MostrarToast(string.format("%s ENTROU NO SERVIDOR\nSTATUS: VÍNCULO ENCONTRADO (%s)", username, textoAlvos))
-            AdicionarCardFeed("VINCULO COM ALVO", username, userId, "Amigo de: " .. textoAlvos, "FONTE: CONSULTA ROPROXY PAGINADA")
+            AdicionarCardFeed("VINCULO COM ALVO", username, userId, "Amigo de: " .. textoAlvos, "FONTE: CONSULTA HÍBRIDA (ENGINE + ROPROXY)")
             return
         end
 
-        if userData.encontros_relevantes >= 2 then
+        -- REFORMULAÇÃO DO FATOR COINCIDÊNCIA: APENAS PARA QUEM NÃO É SEU AMIGO
+        if not ehAmigoMeu and userData.encontros_relevantes >= 2 then
             SuspeitosUnicosServidor[userId] = true
             AtualizarContadorSuspeitos()
             userData.status_atual = "FATOR COINCIDÊNCIA"
             SalvarBancoDeDados()
 
             MostrarToast(string.format("%s ENTROU NO SERVIDOR\nSTATUS: FATOR COINCIDÊNCIA (%dX)", username, userData.encontros_relevantes))
-            AdicionarCardFeed("FATOR COINCIDENCIA", username, userId, string.format("%d Encontros Relevantes", userData.encontros_relevantes), string.format("Entrou num server de %d players", totalPlayers))
+            AdicionarCardFeed("FATOR COINCIDENCIA", username, userId, string.format("%d Encontros Relevantes", userData.encontros_relevantes), string.format("Entrou num server de %d players (Não é seu amigo)", totalPlayers))
             return
         end
 
+        -- CONTA RECENTE (ALT DETECTADA)
         if age >= 1 and age <= 20 then
             SuspeitosUnicosServidor[userId] = true
             AtualizarContadorSuspeitos()
@@ -643,6 +659,7 @@ local function ProcessarEntradaJogador(player)
             return
         end
 
+        -- SE FOR APENAS SEU AMIGO (SEM NENHUM VÍNCULO COM ALVOS OU ANOMALIAS)
         if ehAmigoMeu then
             userData.status_atual = "AMIGO"
             SalvarBancoDeDados()
@@ -667,6 +684,7 @@ Players.PlayerRemoving:Connect(function(player)
     end
 end)
 
+-- Processa todos os jogadores que já estão no servidor ao injetar o script
 for _, p in ipairs(Players:GetPlayers()) do
     if p ~= LocalPlayer then
         task.spawn(function()
@@ -675,6 +693,7 @@ for _, p in ipairs(Players:GetPlayers()) do
     end
 end
 
+-- SISTEMA MULTI-API PARA COPIAR INFORMAÇÕES NO EXECUTOR
 CopyBtn.MouseButton1Click:Connect(function()
     local output = "=== PROJECT SPWN - RELATÓRIO DE SESSÃO DETALHADO ===\n" .. table.concat(logsHistoricoEstruturado, "\n")
     if #logsHistoricoEstruturado == 0 then
@@ -682,7 +701,7 @@ CopyBtn.MouseButton1Click:Connect(function()
     end
 
     local copiado = false
-    
+
     if setclipboard then
         local ok = pcall(function() setclipboard(output) end)
         if ok then copiado = true end
