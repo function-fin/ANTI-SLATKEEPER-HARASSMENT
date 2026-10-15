@@ -14,7 +14,25 @@ local MAX_HISTORY_PER_USER = 50
 
 local Database = {
     database_version = DB_VERSION,
-    users = {}
+    users = {},
+    custom_blacklist = {
+        ["lylsgky"] = "Slayer member",
+        ["breno010l"] = "Bazuka / Slayer Owner",
+        ["trolllinux"] = "DevCat / Slayer / Ligação com Bazuka",
+        ["staffordmakayla783"] = "Amigo Bazuka",
+        ["itz_kadu22"] = "Bazuka Alt",
+        ["pal_doce1238"] = "Bazuka Alt",
+        ["bacongosta837"] = "Dark Vazador",
+        ["vermelhada23"] = "XinHub Yasmin",
+        ["rtrt967"] = "Lolyta Coquette",
+        ["baconsigma28091"] = "Dark Alt",
+        ["eyetr0col"] = "Suspeito / Pessoa Relevante",
+        ["meutiobateemimeguoza"] = "Suspeito Próximo",
+        ["eirtaauder"] = "Monitorado",
+        ["silvaxz_572"] = "Monitorado",
+        ["nao_souerivaldo"] = "Amigo do Renegado",
+        ["ROBLOXUSERSPWN0"] = "BOT"
+    }
 }
 
 local function CarregarBancoDeDados()
@@ -23,13 +41,9 @@ local function CarregarBancoDeDados()
             return HttpService:JSONDecode(readfile(FILE_PATH))
         end
     end)
-    if success and type(result) == "table" and result.users then
-        Database = result
-    else
-        Database = {
-            database_version = DB_VERSION,
-            users = {}
-        }
+    if success and type(result) == "table" then
+        if result.users then Database.users = result.users end
+        if result.custom_blacklist then Database.custom_blacklist = result.custom_blacklist end
     end
 end
 
@@ -42,25 +56,6 @@ local function SalvarBancoDeDados()
 end
 
 CarregarBancoDeDados()
-
-local LISTA_NEGRA_NOMES = {
-    ["lylsgky"] = "Slayer member",
-    ["breno010l"] = "Bazuka / Slayer Owner",
-    ["trolllinux"] = "DevCat / Slayer / Ligação com Bazuka",
-    ["staffordmakayla783"] = "Amigo Bazuka",
-    ["itz_kadu22"] = "Bazuka Alt",
-    ["pal_doce1238"] = "Bazuka Alt",
-    ["bacongosta837"] = "Dark Vazador",
-    ["vermelhada23"] = "XinHub Yasmin",
-    ["rtrt967"] = "Lolyta Coquette",
-    ["baconsigma28091"] = "Dark Alt",
-    ["eyetr0col"] = "Suspeito / Pessoa Relevante",
-    ["meutiobateemimeguoza"] = "Suspeito Próximo",
-    ["eirtaauder"] = "Monitorado",
-    ["silvaxz_572"] = "Monitorado",
-    ["nao_souerivaldo"] = "Amigo do Renegado",
-    ["ROBLOXUSERSPWN0"] = "BOT"
-}
 
 local CacheIDsListaNegra = {}
 
@@ -82,7 +77,7 @@ local function ResolverUserId(username)
 end
 
 task.spawn(function()
-    for nick, _ in pairs(LISTA_NEGRA_NOMES) do
+    for nick, _ in pairs(Database.custom_blacklist) do
         ResolverUserId(nick)
         task.wait(0.1)
     end
@@ -91,15 +86,15 @@ end)
 local function VerificarSeEstaNaListaNegra(userId, username)
     if username then
         local lowerName = string.lower(username)
-        if LISTA_NEGRA_NOMES[lowerName] then
-            return true, username, LISTA_NEGRA_NOMES[lowerName]
+        if Database.custom_blacklist[lowerName] then
+            return true, username, Database.custom_blacklist[lowerName]
         end
     end
 
     if userId then
         for lowerName, cachedId in pairs(CacheIDsListaNegra) do
             if cachedId == userId then
-                return true, lowerName, LISTA_NEGRA_NOMES[lowerName]
+                return true, lowerName, Database.custom_blacklist[lowerName]
             end
         end
     end
@@ -130,7 +125,7 @@ local function ConsultarVinculoComListaNegra(userId)
         return CacheVinculos[userId].status, CacheVinculos[userId].alvos, CacheVinculos[userId].textoAlvos
     end
 
-    for lowerNick, _ in pairs(LISTA_NEGRA_NOMES) do
+    for lowerNick, _ in pairs(Database.custom_blacklist) do
         if not CacheIDsListaNegra[lowerNick] then
             ResolverUserId(lowerNick)
         end
@@ -146,12 +141,12 @@ local function ConsultarVinculoComListaNegra(userId)
     if sucessoNativo and friendPages then
         while true do
             local paginaAtual = friendPages:GetCurrentPage()
-            
+
             for _, amigo in ipairs(paginaAtual) do
                 local fId = tonumber(amigo.Id)
-                local fName = string.lower(tostring(amigo.Username or ""))
+                local fName = string.lower(tostring(amigo.Username or amigo.Name or ""))
 
-                for lowerNick, _ in pairs(LISTA_NEGRA_NOMES) do
+                for lowerNick, _ in pairs(Database.custom_blacklist) do
                     local targetId = CacheIDsListaNegra[lowerNick]
                     if (targetId and fId == targetId) or (fName == lowerNick) then
                         if not alvosEncontradosMap[lowerNick] then
@@ -201,7 +196,7 @@ local function ConsultarVinculoComListaNegra(userId)
                         local fId = tonumber(friendInfo.id)
                         local fName = string.lower(tostring(friendInfo.name or friendInfo.username or ""))
 
-                        for lowerNick, _ in pairs(LISTA_NEGRA_NOMES) do
+                        for lowerNick, _ in pairs(Database.custom_blacklist) do
                             local targetId = CacheIDsListaNegra[lowerNick]
                             if (targetId and fId == targetId) or (fName == lowerNick) then
                                 if not alvosEncontradosMap[lowerNick] then
@@ -230,7 +225,6 @@ local function ConsultarVinculoComListaNegra(userId)
         end
     end
 
-    -- COMPILAÇÃO FINAL
     if #alvosEncontradosList > 0 then
         local textoAlvos = table.concat(alvosEncontradosList, ", ")
         CacheVinculos[userId] = {status = "CONFIRMADO", alvos = alvosEncontradosList, textoAlvos = textoAlvos}
@@ -241,7 +235,7 @@ local function ConsultarVinculoComListaNegra(userId)
     return "NENHUM", {}, ""
 end
 
--- 4. INTERFACE VISUAL
+-- INTERFACE VISUAL
 local ParentGui = (gethui and gethui()) or CoreGui or LocalPlayer:WaitForChild("PlayerGui")
 
 if ParentGui:FindFirstChild("PROJECT_SPWN_GUI") then
@@ -293,7 +287,7 @@ HeaderIcon.Image = "rbxassetid://77667780640343"
 HeaderIcon.Parent = Header
 
 local Title = Instance.new("TextLabel")
-Title.Size = UDim2.new(1, -90, 1, 0)
+Title.Size = UDim2.new(1, -130, 1, 0)
 Title.Position = UDim2.new(0, 48, 0, 0)
 Title.BackgroundTransparency = 1
 Title.Text = "Anti-persecution PROJECT WEB"
@@ -303,12 +297,137 @@ Title.Font = ARCADE_FONT
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = Header
 
+-- BOTÃO DA PASTA QUE ABRE A MINI INTERFACE (ID: 76204370315940)
+local BlacklistMenuBtn = Instance.new("ImageButton")
+BlacklistMenuBtn.Size = UDim2.new(0, 32, 0, 32)
+BlacklistMenuBtn.Position = UDim2.new(1, -76, 0, 6)
+BlacklistMenuBtn.BackgroundTransparency = 1
+BlacklistMenuBtn.Image = "rbxassetid://76204370315940"
+BlacklistMenuBtn.Parent = Header
+
 local CloseBtn = Instance.new("ImageButton")
 CloseBtn.Size = UDim2.new(0, 32, 0, 32)
 CloseBtn.Position = UDim2.new(1, -40, 0, 6)
 CloseBtn.BackgroundTransparency = 1
 CloseBtn.Image = "rbxassetid://78774633521849"
 CloseBtn.Parent = Header
+
+-- MINI INTERFACE DA LISTA NEGRA
+local BlacklistFrame = Instance.new("Frame")
+BlacklistFrame.Name = "BlacklistFrame"
+BlacklistFrame.Size = UDim2.new(0, 420, 0, 260)
+BlacklistFrame.Position = UDim2.new(0.5, -210, 0.5, -130)
+BlacklistFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+BlacklistFrame.BorderSizePixel = 0
+BlacklistFrame.Visible = false
+BlacklistFrame.Active = true
+BlacklistFrame.Parent = ScreenGui
+
+local BlacklistStroke = Instance.new("UIStroke")
+BlacklistStroke.Color = Color3.fromRGB(255, 255, 255)
+BlacklistStroke.Thickness = 1.5
+BlacklistStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+BlacklistStroke.Parent = BlacklistFrame
+
+local BLHeader = Instance.new("Frame")
+BLHeader.Size = UDim2.new(1, 0, 0, 40)
+BLHeader.BackgroundTransparency = 1
+BLHeader.Parent = BlacklistFrame
+
+local BLHeaderIcon = Instance.new("ImageLabel")
+BLHeaderIcon.Size = UDim2.new(0, 24, 0, 24)
+BLHeaderIcon.Position = UDim2.new(0, 10, 0, 8)
+BLHeaderIcon.BackgroundTransparency = 1
+BLHeaderIcon.Image = "rbxassetid://77667780640343"
+BLHeaderIcon.Parent = BLHeader
+
+local BLTitle = Instance.new("TextLabel")
+BLTitle.Size = UDim2.new(1, -80, 1, 0)
+BLTitle.Position = UDim2.new(0, 40, 0, 0)
+BLTitle.BackgroundTransparency = 1
+BLTitle.Text = "Blacklisted Users"
+BLTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+BLTitle.TextSize = 16
+BLTitle.Font = ARCADE_FONT
+BLTitle.TextXAlignment = Enum.TextXAlignment.Left
+BLTitle.Parent = BLHeader
+
+local BLCloseBtn = Instance.new("ImageButton")
+BLCloseBtn.Size = UDim2.new(0, 28, 0, 28)
+BLCloseBtn.Position = UDim2.new(1, -34, 0, 6)
+BLCloseBtn.BackgroundTransparency = 1
+BLCloseBtn.Image = "rbxassetid://78774633521849"
+BLCloseBtn.Parent = BLHeader
+
+local BLDivisor = Instance.new("Frame")
+BLDivisor.Size = UDim2.new(1, -20, 0, 1)
+BLDivisor.Position = UDim2.new(0, 10, 0, 42)
+BLDivisor.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+BLDivisor.BorderSizePixel = 0
+BLDivisor.Parent = BlacklistFrame
+
+local BLScroll = Instance.new("ScrollingFrame")
+BLScroll.Size = UDim2.new(0.5, -15, 1, -85)
+BLScroll.Position = UDim2.new(0, 10, 0, 50)
+BLScroll.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+BLScroll.BorderSizePixel = 0
+BLScroll.ScrollBarThickness = 3
+BLScroll.ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255)
+BLScroll.Parent = BlacklistFrame
+
+local BLUIList = Instance.new("UIListLayout")
+BLUIList.SortOrder = Enum.SortOrder.LayoutOrder
+BLUIList.Padding = UDim.new(0, 4)
+BLUIList.Parent = BLScroll
+
+BLUIList:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    BLScroll.CanvasSize = UDim2.new(0, 0, 0, BLUIList.AbsoluteContentSize.Y)
+end)
+
+local BLInputBox = Instance.new("TextBox")
+BLInputBox.Size = UDim2.new(0.5, -15, 0, 36)
+BLInputBox.Position = UDim2.new(0.5, 5, 0, 60)
+BLInputBox.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+BLInputBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+BLInputBox.PlaceholderText = "Digite o nome do usuário..."
+BLInputBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+BLInputBox.Text = ""
+BLInputBox.TextSize = 10
+BLInputBox.Font = ARCADE_FONT
+BLInputBox.ClearTextOnFocus = false
+BLInputBox.Parent = BlacklistFrame
+
+local BLInputStroke = Instance.new("UIStroke")
+BLInputStroke.Color = Color3.fromRGB(255, 255, 255)
+BLInputStroke.Thickness = 1
+BLInputStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+BLInputStroke.Parent = BLInputBox
+
+local BLAddBtn = Instance.new("TextButton")
+BLAddBtn.Size = UDim2.new(0.5, -15, 0, 36)
+BLAddBtn.Position = UDim2.new(0.5, 5, 0, 105)
+BLAddBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+BLAddBtn.Text = "Adicionar"
+BLAddBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+BLAddBtn.TextSize = 11
+BLAddBtn.Font = ARCADE_FONT
+BLAddBtn.Parent = BlacklistFrame
+
+local BLAddStroke = Instance.new("UIStroke")
+BLAddStroke.Color = Color3.fromRGB(255, 255, 255)
+BLAddStroke.Thickness = 1
+BLAddStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+BLAddStroke.Parent = BLAddBtn
+
+local BLTotalLabel = Instance.new("TextLabel")
+BLTotalLabel.Size = UDim2.new(0.5, -15, 0, 20)
+BLTotalLabel.Position = UDim2.new(0, 10, 1, -26)
+BLTotalLabel.BackgroundTransparency = 1
+BLTotalLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+BLTotalLabel.TextSize = 9
+BLTotalLabel.Font = ARCADE_FONT
+BLTotalLabel.TextXAlignment = Enum.TextXAlignment.Left
+BLTotalLabel.Parent = BlacklistFrame
 
 local StatsBar = Instance.new("Frame")
 StatsBar.Size = UDim2.new(1, -20, 0, 30)
@@ -397,21 +516,21 @@ CopyStroke.Thickness = 1
 CopyStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 CopyStroke.Parent = CopyBtn
 
-local DiscordBtn = Instance.new("TextButton")
-DiscordBtn.Size = UDim2.new(0.38, 0, 1, 0)
-DiscordBtn.Position = UDim2.new(0.33, 0, 0, 0)
-DiscordBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-DiscordBtn.Text = "SEND TO DISCORD"
-DiscordBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-DiscordBtn.Font = ARCADE_FONT
-DiscordBtn.TextSize = 9
-DiscordBtn.Parent = Footer
+local InspectBtn = Instance.new("TextButton")
+InspectBtn.Size = UDim2.new(0.38, 0, 1, 0)
+InspectBtn.Position = UDim2.new(0.33, 0, 0, 0)
+InspectBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+InspectBtn.Text = "Inspect my server"
+InspectBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+InspectBtn.Font = ARCADE_FONT
+InspectBtn.TextSize = 9
+InspectBtn.Parent = Footer
 
-local DiscordStroke = Instance.new("UIStroke")
-DiscordStroke.Color = Color3.fromRGB(255, 255, 255)
-DiscordStroke.Thickness = 1
-DiscordStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-DiscordStroke.Parent = DiscordBtn
+local InspectStroke = Instance.new("UIStroke")
+InspectStroke.Color = Color3.fromRGB(255, 255, 255)
+InspectStroke.Thickness = 1
+InspectStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+InspectStroke.Parent = InspectBtn
 
 local ClearBtn = Instance.new("TextButton")
 ClearBtn.Size = UDim2.new(0.27, 0, 1, 0)
@@ -510,12 +629,98 @@ local function AdicionarCardFeed(status, user, userId, motivo, detalhe)
     table.insert(logsHistoricoEstruturado, logEntrada)
 end
 
+local AtualizarInterfaceListaNegra
+AtualizarInterfaceListaNegra = function()
+    for _, child in ipairs(BLScroll:GetChildren()) do
+        if child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+
+    local totalAlvos = 0
+    for nick, motivo in pairs(Database.custom_blacklist) do
+        totalAlvos = totalAlvos + 1
+        
+        local Row = Instance.new("Frame")
+        Row.Size = UDim2.new(1, -4, 0, 28)
+        Row.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        Row.BorderSizePixel = 0
+        Row.Parent = BLScroll
+
+        local RowStroke = Instance.new("UIStroke")
+        RowStroke.Color = Color3.fromRGB(100, 100, 100)
+        RowStroke.Thickness = 1
+        RowStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        RowStroke.Parent = Row
+
+        -- ÍCONE DE USUÁRIO AO LADO DO NOME (ID: 92027896399298)
+        local IconUser = Instance.new("ImageLabel")
+        IconUser.Size = UDim2.new(0, 18, 0, 18)
+        IconUser.Position = UDim2.new(0, 5, 0, 5)
+        IconUser.BackgroundTransparency = 1
+        IconUser.Image = "rbxassetid://92027896399298"
+        IconUser.Parent = Row
+
+        local NameLabel = Instance.new("TextLabel")
+        NameLabel.Size = UDim2.new(1, -55, 1, 0)
+        NameLabel.Position = UDim2.new(0, 28, 0, 0)
+        NameLabel.BackgroundTransparency = 1
+        NameLabel.Text = tostring(nick)
+        NameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        NameLabel.TextSize = 9
+        NameLabel.Font = ARCADE_FONT
+        NameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        NameLabel.Parent = Row
+
+        -- BOTÃO DE REMOVER ALVO COM O ID SOLICITADO (ID: 78774633521849)
+        local RemoveTargetBtn = Instance.new("ImageButton")
+        RemoveTargetBtn.Size = UDim2.new(0, 22, 0, 22)
+        RemoveTargetBtn.Position = UDim2.new(1, -25, 0, 3)
+        RemoveTargetBtn.BackgroundTransparency = 1
+        RemoveTargetBtn.Image = "rbxassetid://78774633521849"
+        RemoveTargetBtn.Parent = Row
+
+        RemoveTargetBtn.MouseButton1Click:Connect(function()
+            Database.custom_blacklist[nick] = nil
+            CacheIDsListaNegra[string.lower(nick)] = nil
+            SalvarBancoDeDados()
+            AtualizarInterfaceListaNegra()
+            MostrarToast("ALVO REMOVIDO DA LISTA NEGRA: " .. tostring(nick))
+        end)
+    end
+
+    BLTotalLabel.Text = "Total: " .. totalAlvos .. " usuários"
+end
+
+BLAddBtn.MouseButton1Click:Connect(function()
+    local text = string.lower(string.gsub(BLInputBox.Text, "^%s*(.-)%s*$", "%1"))
+    if text ~= "" then
+        Database.custom_blacklist[text] = "Adicionado manualmente"
+        SalvarBancoDeDados()
+        ResolverUserId(text)
+        BLInputBox.Text = ""
+        AtualizarInterfaceListaNegra()
+        MostrarToast("ALVO ADICIONADO COM SUCESSO!")
+    else
+        MostrarToast("DIGITE UM NOME VÁLIDO!")
+    end
+end)
+
 ToggleBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
 
 CloseBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = false
+end)
+
+BlacklistMenuBtn.MouseButton1Click:Connect(function()
+    AtualizarInterfaceListaNegra()
+    BlacklistFrame.Visible = not BlacklistFrame.Visible
+end)
+
+BLCloseBtn.MouseButton1Click:Connect(function()
+    BlacklistFrame.Visible = false
 end)
 
 ClearBtn.MouseButton1Click:Connect(function()
@@ -529,7 +734,6 @@ ClearBtn.MouseButton1Click:Connect(function()
     MostrarToast("INFORMAÇÕES E FEED LIMPOS COM SUCESSO!")
 end)
 
--- 5. LÓGICA PRINCIPAL DE ANALÍTICA E PROCESSAMENTO
 local function ProcessarEntradaJogador(player)
     if player == LocalPlayer then return end
 
@@ -589,7 +793,6 @@ local function ProcessarEntradaJogador(player)
 
     SalvarBancoDeDados()
 
-    -- 1. VERIFICAÇÃO DIRETA DE LISTA NEGRA
     local isLN, targetName, targetMotivo = VerificarSeEstaNaListaNegra(userId, username)
     if isLN then
         SuspeitosUnicosServidor[userId] = true
@@ -602,11 +805,9 @@ local function ProcessarEntradaJogador(player)
         return
     end
 
-    -- 2. VERIFICAÇÃO DE VÍNCULOS E COINCIDÊNCIAS EM SEGUNDO PLANO
     task.spawn(function()
         local vinculoStatus, alvosLista, textoAlvos = ConsultarVinculoComListaNegra(userId)
 
-        -- SE FOR SEU AMIGO E TIVER VÍNCULO COM A LISTA NEGRA (RISCO ALTO)
         if ehAmigoMeu and vinculoStatus == "CONFIRMADO" then
             SuspeitosUnicosServidor[userId] = true
             AtualizarContadorSuspeitos()
@@ -621,7 +822,6 @@ local function ProcessarEntradaJogador(player)
             return
         end
 
-        -- VÍNCULO DIRETO COM LISTA NEGRA (QUANDO NÃO É SEU AMIGO)
         if vinculoStatus == "CONFIRMADO" then
             SuspeitosUnicosServidor[userId] = true
             AtualizarContadorSuspeitos()
@@ -635,7 +835,6 @@ local function ProcessarEntradaJogador(player)
             return
         end
 
-        -- REFORMULAÇÃO DO FATOR COINCIDÊNCIA: APENAS PARA QUEM NÃO É SEU AMIGO
         if not ehAmigoMeu and userData.encontros_relevantes >= 2 then
             SuspeitosUnicosServidor[userId] = true
             AtualizarContadorSuspeitos()
@@ -647,7 +846,6 @@ local function ProcessarEntradaJogador(player)
             return
         end
 
-        -- CONTA RECENTE (ALT DETECTADA)
         if age >= 1 and age <= 20 then
             SuspeitosUnicosServidor[userId] = true
             AtualizarContadorSuspeitos()
@@ -659,7 +857,6 @@ local function ProcessarEntradaJogador(player)
             return
         end
 
-        -- SE FOR APENAS SEU AMIGO (SEM NENHUM VÍNCULO COM ALVOS OU ANOMALIAS)
         if ehAmigoMeu then
             userData.status_atual = "AMIGO"
             SalvarBancoDeDados()
@@ -684,7 +881,6 @@ Players.PlayerRemoving:Connect(function(player)
     end
 end)
 
--- Processa todos os jogadores que já estão no servidor ao injetar o script
 for _, p in ipairs(Players:GetPlayers()) do
     if p ~= LocalPlayer then
         task.spawn(function()
@@ -693,7 +889,20 @@ for _, p in ipairs(Players:GetPlayers()) do
     end
 end
 
--- SISTEMA MULTI-API PARA COPIAR INFORMAÇÕES NO EXECUTOR
+InspectBtn.MouseButton1Click:Connect(function()
+    MostrarToast("INSPECIONANDO JOGADORES DO SERVIDOR...")
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            task.spawn(function()
+                ProcessarEntradaJogador(p)
+            end)
+        end
+    end
+    task.delay(1.5, function()
+        MostrarToast("INSPEÇÃO DO SERVIDOR CONCLUÍDA!")
+    end)
+end)
+
 CopyBtn.MouseButton1Click:Connect(function()
     local output = "=== PROJECT SPWN - RELATÓRIO DE SESSÃO DETALHADO ===\n" .. table.concat(logsHistoricoEstruturado, "\n")
     if #logsHistoricoEstruturado == 0 then
