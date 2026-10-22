@@ -15,24 +15,7 @@ local MAX_HISTORY_PER_USER = 50
 local Database = {
     database_version = DB_VERSION,
     users = {},
-    custom_blacklist = {
-        ["lylsgky"] = "Slayer member",
-        ["breno010l"] = "Bazuka / Slayer Owner",
-        ["trolllinux"] = "DevCat / Slayer / Ligação com Bazuka",
-        ["staffordmakayla783"] = "Amigo Bazuka",
-        ["itz_kadu22"] = "Bazuka Alt",
-        ["pal_doce1238"] = "Bazuka Alt",
-        ["bacongosta837"] = "Dark Vazador",
-        ["vermelhada23"] = "XinHub Yasmin",
-        ["rtrt967"] = "Lolyta Coquette",
-        ["baconsigma28091"] = "Dark Alt",
-        ["eyetr0col"] = "Suspeito / Pessoa Relevante",
-        ["meutiobateemimeguoza"] = "Suspeito Próximo",
-        ["eirtaauder"] = "Monitorado",
-        ["silvaxz_572"] = "Monitorado",
-        ["nao_souerivaldo"] = "Amigo do Renegado",
-        ["ROBLOXUSERSPWN0"] = "BOT"
-    }
+    custom_blacklist = {} -- Alvos zerados para novos usuários
 }
 
 local function CarregarBancoDeDados()
@@ -297,7 +280,6 @@ Title.Font = ARCADE_FONT
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = Header
 
--- BOTÃO DA PASTA QUE ABRE A MINI INTERFACE (ID: 76204370315940)
 local BlacklistMenuBtn = Instance.new("ImageButton")
 BlacklistMenuBtn.Size = UDim2.new(0, 32, 0, 32)
 BlacklistMenuBtn.Position = UDim2.new(1, -76, 0, 6)
@@ -640,7 +622,7 @@ AtualizarInterfaceListaNegra = function()
     local totalAlvos = 0
     for nick, motivo in pairs(Database.custom_blacklist) do
         totalAlvos = totalAlvos + 1
-        
+
         local Row = Instance.new("Frame")
         Row.Size = UDim2.new(1, -4, 0, 28)
         Row.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
@@ -708,7 +690,6 @@ ToggleBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = not MainFrame.Visible
 end)
 
--- BOTÃO DE FECHAR INTERNO DESTROI O GUI COMPLETAMENTE
 CloseBtn.MouseButton1Click:Connect(function()
     ScreenGui:Destroy()
 end)
